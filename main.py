@@ -6,13 +6,14 @@ Flow:
     -> Twilio forwards it to this FastAPI webhook (POST /whatsapp)
     -> We send the message + system prompt to Claude
     -> Claude's reply is sent back to the guest via Twilio
-
+    -> If the reply is tagged [ESCALATE], the manager also gets a WhatsApp alert
 """
 
 import os
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client as TwilioClient
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -20,6 +21,47 @@ load_dotenv()
 
 app = FastAPI()
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+# ---------------------------------------------------------------------------
+# Manager notification setup — sends YOU a WhatsApp message whenever the
+# bot escalates a guest conversation. Requires these values in your .env:
+#   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN  (from Twilio Console > Account)
+#   TWILIO_WHATSAPP_FROM   (your Twilio/sandbox WhatsApp number, e.g.
+#                           "whatsapp:+14155238886")
+#   MANAGER_WHATSAPP_NUMBER (your personal number, e.g. "whatsapp:+9198...")
+# ---------------------------------------------------------------------------
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
+MANAGER_WHATSAPP_NUMBER = os.environ.get("MANAGER_WHATSAPP_NUMBER")
+
+twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+
+def notify_manager(guest_number: str, guest_message: str, guest_reply: str) -> None:
+    """Send the property manager a WhatsApp alert about an escalated chat."""
+    if not (twilio_client and TWILIO_WHATSAPP_FROM and MANAGER_WHATSAPP_NUMBER):
+        print(f"[ESCALATION - notify skipped, Twilio not configured] "
+              f"{guest_number}: {guest_message}")
+        return
+
+    alert_text = (
+        f"🚨 Escalation alert\n"
+        f"Guest: {guest_number}\n"
+        f"Message: {guest_message}\n"
+        f"Bot told guest: {guest_reply}"
+    )
+    try:
+        twilio_client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            to=MANAGER_WHATSAPP_NUMBER,
+            body=alert_text,
+        )
+    except Exception as e:
+        print(f"[ERROR] Failed to notify manager: {e}")
+
 
 # ---------------------------------------------------------------------------
 # 1. Business knowledge Claude needs. Edit this for your properties.
@@ -55,13 +97,20 @@ TONE:
 - Never invent details about a property you don't have information on —
   say you'll confirm with the team instead of guessing.
 
-ESCALATION — hand off to a human immediately (say "I'm connecting you with
-our team right now, they'll reach out within 10 minutes") and do NOT try to
-resolve these yourself:
+ESCALATION — hand off to a human immediately and do NOT try to resolve
+these yourself:
 - Emergencies, safety issues, lockouts
 - Refund or payment disputes
 - Complaints about property condition
 - Anything involving property damage
+- Any message where the guest expresses distress, feeling unsafe, or says
+  something is seriously wrong, even without an exact keyword match
+
+When any of the above applies, start your reply with the exact tag
+[ESCALATE] followed by a space, then your normal guest-facing message
+telling them "I'm connecting you with our team right now, they'll reach
+out within 10 minutes." Only use this tag for genuine escalations — never
+for routine questions like check-in time or WiFi.
 
 If the guest is a property owner asking about your management service,
 briefly explain you offer Full Service (end-to-end management) and
@@ -117,6 +166,10 @@ async def whatsapp_webhook(
             "Our team will follow up with you shortly."
         )
         print(f"[ERROR] Claude call failed for {guest_number}: {e}")
+
+    if reply_text.startswith("[ESCALATE]"):
+        reply_text = reply_text.replace("[ESCALATE]", "", 1).strip()
+        notify_manager(guest_number, guest_message, reply_text)
 
     twiml = MessagingResponse()
     twiml.message(reply_text)
