@@ -1,0 +1,10 @@
+# Never commit real secrets
+.env
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
