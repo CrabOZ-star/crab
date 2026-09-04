@@ -68,7 +68,7 @@ def notify_manager(guest_number: str, guest_message: str, guest_reply: str) -> N
 #    Keep it factual and specific — this is what stops Claude from guessing.
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """
-You are the WhatsApp assistant for [ CRABly], an Airbnb property
+You are the WhatsApp assistant for CRAByo, an Airbnb property
 management service in Chennai, India. You help guests and prospective
 property owners.
 
